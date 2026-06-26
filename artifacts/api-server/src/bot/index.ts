@@ -354,7 +354,6 @@ function registerHandlers(bot: Bot) {
 
   // Withdrawal — confirm
   bot.callbackQuery("confirm_wd", async (ctx) => {
-    await ctx.answerCallbackQuery("✅ Request পাঠানো হচ্ছে...");
     const userId = ctx.from.id;
     const state = withdrawalStates.get(userId);
 
@@ -365,8 +364,29 @@ function registerHandlers(bot: Bot) {
       !state.account ||
       !state.amount
     ) {
+      await ctx.answerCallbackQuery();
       return;
     }
+
+    // Check sufficient balance
+    const currentBalance = getUserBalance(userId);
+    if (currentBalance < state.amount) {
+      await ctx.answerCallbackQuery("❌ Balance কম!");
+      await ctx.editMessageText(
+        `❌ *Balance কম!*\n\n` +
+          `💰 আপনার Balance: *${currentBalance.toFixed(2)} টাকা*\n` +
+          `💸 চাওয়া Amount: *${state.amount} টাকা*\n\n` +
+          `পর্যাপ্ত balance নেই।`,
+        { parse_mode: "Markdown", reply_markup: homeKeyboard() },
+      );
+      withdrawalStates.delete(userId);
+      return;
+    }
+
+    await ctx.answerCallbackQuery("✅ Request পাঠানো হচ্ছে...");
+
+    // Deduct balance immediately
+    addBalance(userId, -state.amount);
 
     const wdId = createWithdrawal(
       userId,
