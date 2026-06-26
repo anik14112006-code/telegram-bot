@@ -1,4 +1,4 @@
-import { Bot, Context, InlineKeyboard } from "grammy";
+import { Bot, Context, InlineKeyboard, Keyboard } from "grammy";
 import {
   getOrCreateUser,
   getUserBalance,
@@ -31,14 +31,23 @@ interface WithdrawalState {
 const withdrawalStates = new Map<number, WithdrawalState>();
 const awaitingFile = new Set<number>();
 
+// ─── Button labels (must match text handlers exactly) ────────────────────────
+
+const BTN_BALANCE = "💰 Balance";
+const BTN_FILE = "📁 Submit File";
+const BTN_WITHDRAWAL = "💸 Withdrawal";
+
 // ─── Keyboards ────────────────────────────────────────────────────────────────
 
-function mainKeyboard() {
-  return new InlineKeyboard()
-    .text("💰 Balance", "balance")
-    .text("📁 Submit File", "submit_file")
+/** Persistent reply keyboard — appears at the bottom of the chat always */
+function mainReplyKeyboard() {
+  return new Keyboard()
+    .text(BTN_BALANCE)
+    .text(BTN_FILE)
     .row()
-    .text("💸 Withdrawal", "withdrawal");
+    .text(BTN_WITHDRAWAL)
+    .resized()
+    .persistent();
 }
 
 function paymentKeyboard() {
@@ -55,10 +64,6 @@ function cancelKeyboard() {
   return new InlineKeyboard().text("❌ বাতিল করুন", "cancel_withdrawal");
 }
 
-function homeKeyboard() {
-  return new InlineKeyboard().text("🏠 Main Menu", "back_home");
-}
-
 // ─── File Submission Helper ───────────────────────────────────────────────────
 
 async function handleFileSubmission(
@@ -69,7 +74,6 @@ async function handleFileSubmission(
   fileName?: string,
 ) {
   const userId = ctx.from.id;
-
   if (!awaitingFile.has(userId)) return;
   awaitingFile.delete(userId);
 
@@ -78,7 +82,6 @@ async function handleFileSubmission(
   if (ADMIN_GROUP_ID) {
     const from = ctx.from;
     const userTag = from.username ? `@${from.username}` : from.first_name;
-
     try {
       await botInstance.api.sendMessage(
         ADMIN_GROUP_ID,
@@ -98,7 +101,7 @@ async function handleFileSubmission(
 
   await ctx.reply(
     `✅ *File সফলভাবে Submit হয়েছে!*\n\n🔖 File ID: #${fileRecordId}\n\nAdmin শীঘ্রই review করবেন।`,
-    { parse_mode: "Markdown", reply_markup: homeKeyboard() },
+    { parse_mode: "Markdown" },
   );
 }
 
@@ -111,182 +114,35 @@ function registerHandlers(bot: Bot) {
     method_binance: "Binance UID",
   };
 
-  // /start
+  // ── /start ──────────────────────────────────────────────────────────────────
   bot.command("start", async (ctx) => {
     const from = ctx.from!;
     getOrCreateUser(from.id, from.first_name, from.last_name, from.username);
 
     await ctx.reply(
-      `স্বাগতম *${from.first_name}*! 👋\n\nনিচের অপশনগুলো থেকে বেছে নিন:`,
-      { parse_mode: "Markdown", reply_markup: mainKeyboard() },
+      `স্বাগতম *${from.first_name}*! 👋\n\nনিচের বাটনগুলো ব্যবহার করুন:`,
+      { parse_mode: "Markdown", reply_markup: mainReplyKeyboard() },
     );
   });
 
-  // /addbalance — admin group only
-  // Usage: /addbalance <telegram_id> <amount>
-  bot.command("addbalance", async (ctx) => {
-    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
-      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
-      return;
-    }
-
-    const args = ctx.match.trim().split(/\s+/);
-    if (args.length !== 2) {
-      await ctx.reply(
-        `⚠️ *ব্যবহার:* \`/addbalance <telegram_id> <amount>\`\n\n` +
-          `উদাহরণ: \`/addbalance 123456789 500\``,
-        { parse_mode: "Markdown" },
-      );
-      return;
-    }
-
-    const targetId = parseInt(args[0]!);
-    const amount = parseFloat(args[1]!);
-
-    if (isNaN(targetId) || isNaN(amount) || amount <= 0) {
-      await ctx.reply("⚠️ সঠিক Telegram ID এবং amount দিন।");
-      return;
-    }
-
-    const user = getUserByTelegramId(targetId);
-    if (!user) {
-      await ctx.reply(
-        `⚠️ Telegram ID \`${targetId}\` এর কোনো user পাওয়া যায়নি।\n\n_User-কে আগে bot-এ /start করতে হবে।_`,
-        { parse_mode: "Markdown" },
-      );
-      return;
-    }
-
-    const newBalance = addBalance(targetId, amount);
-    const userName = user.username ? `@${user.username}` : user.first_name;
-
-    await ctx.reply(
-      `✅ *Balance Add সফল!*\n\n` +
-        `👤 User: ${userName}\n` +
-        `🆔 ID: \`${targetId}\`\n` +
-        `➕ Added: *${amount} টাকা*\n` +
-        `💰 নতুন Balance: *${newBalance.toFixed(2)} টাকা*`,
-      { parse_mode: "Markdown" },
-    );
-
-    // Notify the user
-    try {
-      await bot.api.sendMessage(
-        targetId,
-        `💰 *আপনার Balance Update হয়েছে!*\n\n` +
-          `➕ *${amount} টাকা* যোগ হয়েছে\n` +
-          `💵 নতুন Balance: *${newBalance.toFixed(2)} টাকা*`,
-        { parse_mode: "Markdown" },
-      );
-    } catch (err) {
-      logger.error({ err, targetId }, "Failed to notify user about balance update");
-    }
-  });
-
-  // /removebalance — admin group only
-  // Usage: /removebalance <telegram_id> <amount>
-  bot.command("removebalance", async (ctx) => {
-    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
-      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
-      return;
-    }
-
-    const args = ctx.match.trim().split(/\s+/);
-    if (args.length !== 2) {
-      await ctx.reply(
-        `⚠️ *ব্যবহার:* \`/removebalance <telegram_id> <amount>\`\n\n` +
-          `উদাহরণ: \`/removebalance 123456789 100\``,
-        { parse_mode: "Markdown" },
-      );
-      return;
-    }
-
-    const targetId = parseInt(args[0]!);
-    const amount = parseFloat(args[1]!);
-
-    if (isNaN(targetId) || isNaN(amount) || amount <= 0) {
-      await ctx.reply("⚠️ সঠিক Telegram ID এবং amount দিন।");
-      return;
-    }
-
-    const user = getUserByTelegramId(targetId);
-    if (!user) {
-      await ctx.reply(
-        `⚠️ Telegram ID \`${targetId}\` এর কোনো user পাওয়া যায়নি।`,
-        { parse_mode: "Markdown" },
-      );
-      return;
-    }
-
-    const newBalance = addBalance(targetId, -amount);
-    const userName = user.username ? `@${user.username}` : user.first_name;
-
-    await ctx.reply(
-      `✅ *Balance কাটা সফল!*\n\n` +
-        `👤 User: ${userName}\n` +
-        `🆔 ID: \`${targetId}\`\n` +
-        `➖ Removed: *${amount} টাকা*\n` +
-        `💰 নতুন Balance: *${newBalance.toFixed(2)} টাকা*`,
-      { parse_mode: "Markdown" },
-    );
-  });
-
-  // /checkbalance — admin group only
-  // Usage: /checkbalance <telegram_id>
-  bot.command("checkbalance", async (ctx) => {
-    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
-      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
-      return;
-    }
-
-    const targetId = parseInt(ctx.match.trim());
-    if (isNaN(targetId)) {
-      await ctx.reply(
-        `⚠️ *ব্যবহার:* \`/checkbalance <telegram_id>\``,
-        { parse_mode: "Markdown" },
-      );
-      return;
-    }
-
-    const user = getUserByTelegramId(targetId);
-    if (!user) {
-      await ctx.reply(
-        `⚠️ Telegram ID \`${targetId}\` এর কোনো user পাওয়া যায়নি।`,
-        { parse_mode: "Markdown" },
-      );
-      return;
-    }
-
-    const userName = user.username ? `@${user.username}` : user.first_name;
-    await ctx.reply(
-      `👤 *User Info*\n\n` +
-        `নাম: ${userName}\n` +
-        `🆔 ID: \`${targetId}\`\n` +
-        `💰 Balance: *${user.balance.toFixed(2)} টাকা*`,
-      { parse_mode: "Markdown" },
-    );
-  });
-
-  // Balance
-  bot.callbackQuery("balance", async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const from = ctx.from;
+  // ── Balance button ──────────────────────────────────────────────────────────
+  bot.hears(BTN_BALANCE, async (ctx) => {
+    const from = ctx.from!;
     getOrCreateUser(from.id, from.first_name, from.last_name, from.username);
     const balance = getUserBalance(from.id);
 
-    await ctx.editMessageText(
+    await ctx.reply(
       `💰 *আপনার Balance*\n\n💵 মোট Balance: *${balance.toFixed(2)} টাকা*`,
-      { parse_mode: "Markdown", reply_markup: homeKeyboard() },
+      { parse_mode: "Markdown" },
     );
   });
 
-  // Submit File
-  bot.callbackQuery("submit_file", async (ctx) => {
-    await ctx.answerCallbackQuery();
-    awaitingFile.add(ctx.from.id);
+  // ── Submit File button ──────────────────────────────────────────────────────
+  bot.hears(BTN_FILE, async (ctx) => {
+    awaitingFile.add(ctx.from!.id);
 
-    await ctx.editMessageText(
-      `📁 *File Submit করুন*\n\nআপনার ফাইলটি পাঠান।\n_(Document, Photo, Video, Audio — সব ধরনের ফাইল পাঠাতে পারবেন)_`,
+    await ctx.reply(
+      `📁 *File Submit করুন*\n\nআপনার ফাইলটি পাঠান।\n_(Document, Photo, Video, Audio — সব ধরনের ফাইল)_`,
       {
         parse_mode: "Markdown",
         reply_markup: new InlineKeyboard().text("❌ বাতিল করুন", "cancel_file"),
@@ -297,27 +153,23 @@ function registerHandlers(bot: Bot) {
   bot.callbackQuery("cancel_file", async (ctx) => {
     await ctx.answerCallbackQuery();
     awaitingFile.delete(ctx.from.id);
-    await ctx.editMessageText(
-      `স্বাগতম *${ctx.from.first_name}*! 👋\n\nনিচের অপশনগুলো থেকে বেছে নিন:`,
-      { parse_mode: "Markdown", reply_markup: mainKeyboard() },
-    );
+    await ctx.editMessageText("বাতিল করা হয়েছে।");
   });
 
-  // Withdrawal — start
-  bot.callbackQuery("withdrawal", async (ctx) => {
-    await ctx.answerCallbackQuery();
-    const from = ctx.from;
+  // ── Withdrawal button ───────────────────────────────────────────────────────
+  bot.hears(BTN_WITHDRAWAL, async (ctx) => {
+    const from = ctx.from!;
     getOrCreateUser(from.id, from.first_name, from.last_name, from.username);
 
     withdrawalStates.set(from.id, { step: "choosing_method" });
 
-    await ctx.editMessageText(
+    await ctx.reply(
       `💸 *Withdrawal Request*\n\nকোন মাধ্যমে withdrawal করতে চান?`,
       { parse_mode: "Markdown", reply_markup: paymentKeyboard() },
     );
   });
 
-  // Withdrawal — payment method
+  // Withdrawal — payment method selection
   bot.callbackQuery(
     ["method_bkash", "method_nagad", "method_binance"],
     async (ctx) => {
@@ -345,11 +197,7 @@ function registerHandlers(bot: Bot) {
   bot.callbackQuery("cancel_withdrawal", async (ctx) => {
     await ctx.answerCallbackQuery();
     withdrawalStates.delete(ctx.from.id);
-
-    await ctx.editMessageText(
-      `স্বাগতম *${ctx.from.first_name}*! 👋\n\nনিচের অপশনগুলো থেকে বেছে নিন:`,
-      { parse_mode: "Markdown", reply_markup: mainKeyboard() },
-    );
+    await ctx.editMessageText("বাতিল করা হয়েছে।");
   });
 
   // Withdrawal — confirm
@@ -377,7 +225,7 @@ function registerHandlers(bot: Bot) {
           `💰 আপনার Balance: *${currentBalance.toFixed(2)} টাকা*\n` +
           `💸 চাওয়া Amount: *${state.amount} টাকা*\n\n` +
           `পর্যাপ্ত balance নেই।`,
-        { parse_mode: "Markdown", reply_markup: homeKeyboard() },
+        { parse_mode: "Markdown" },
       );
       withdrawalStates.delete(userId);
       return;
@@ -396,6 +244,7 @@ function registerHandlers(bot: Bot) {
     );
     withdrawalStates.delete(userId);
 
+    // Send to admin group
     if (ADMIN_GROUP_ID) {
       const from = ctx.from;
       const userTag = from.username ? `@${from.username}` : from.first_name;
@@ -405,30 +254,25 @@ function registerHandlers(bot: Bot) {
         timeStyle: "short",
       });
 
-      const adminMsg =
-        `🔔 *নতুন Withdrawal Request*\n\n` +
-        `👤 User: ${userTag}\n` +
-        `🆔 Telegram ID: \`${from.id}\`\n` +
-        `💰 Amount: *${state.amount} টাকা*\n` +
-        `💳 Method: *${state.method}*\n` +
-        `📱 Account: \`${state.account}\`\n` +
-        `📅 সময়: ${now}\n\n` +
-        `🔖 Request ID: #${wdId}`;
-
       const adminKeyboard = new InlineKeyboard()
         .text("✅ Approve", `approve_${wdId}`)
         .text("❌ Reject", `reject_${wdId}`);
 
       try {
-        await bot.api.sendMessage(ADMIN_GROUP_ID, adminMsg, {
-          parse_mode: "Markdown",
-          reply_markup: adminKeyboard,
-        });
-      } catch (err) {
-        logger.error(
-          { err },
-          "Failed to send withdrawal notification to admin group",
+        await bot.api.sendMessage(
+          ADMIN_GROUP_ID,
+          `🔔 *নতুন Withdrawal Request*\n\n` +
+            `👤 User: ${userTag}\n` +
+            `🆔 Telegram ID: \`${from.id}\`\n` +
+            `💰 Amount: *${state.amount} টাকা*\n` +
+            `💳 Method: *${state.method}*\n` +
+            `📱 Account: \`${state.account}\`\n` +
+            `📅 সময়: ${now}\n\n` +
+            `🔖 Request ID: #${wdId}`,
+          { parse_mode: "Markdown", reply_markup: adminKeyboard },
         );
+      } catch (err) {
+        logger.error({ err }, "Failed to send withdrawal notification to admin group");
       }
     }
 
@@ -438,22 +282,12 @@ function registerHandlers(bot: Bot) {
         `💰 Amount: ${state.amount} টাকা\n` +
         `💳 Method: ${state.method}\n\n` +
         `Admin review করার পর আপনাকে জানানো হবে।`,
-      { parse_mode: "Markdown", reply_markup: homeKeyboard() },
+      { parse_mode: "Markdown" },
     );
   });
 
-  // Back home
-  bot.callbackQuery("back_home", async (ctx) => {
-    await ctx.answerCallbackQuery();
-    await ctx.editMessageText(
-      `স্বাগতম *${ctx.from.first_name}*! 👋\n\nনিচের অপশনগুলো থেকে বেছে নিন:`,
-      { parse_mode: "Markdown", reply_markup: mainKeyboard() },
-    );
-  });
-
-  // Admin: Approve / Reject — only process from the configured admin group
+  // ── Admin: Approve / Reject ─────────────────────────────────────────────────
   bot.callbackQuery(/^(approve|reject)_(\d+)$/, async (ctx) => {
-    // Authorization: only allow from the configured admin group
     if (ADMIN_GROUP_ID && String(ctx.chat?.id) !== ADMIN_GROUP_ID) {
       await ctx.answerCallbackQuery("⛔ Permission নেই!");
       return;
@@ -467,21 +301,17 @@ function registerHandlers(bot: Bot) {
       await ctx.answerCallbackQuery("⚠️ Request পাওয়া যায়নি!");
       return;
     }
-
     if (wd.status !== "pending") {
       await ctx.answerCallbackQuery("⚠️ এই request ইতিমধ্যে process হয়েছে!");
       return;
     }
 
-    const status = action === "approve" ? "approved" : "rejected";
-    updateWithdrawalStatus(wdId, status);
+    updateWithdrawalStatus(wdId, action === "approve" ? "approved" : "rejected");
 
     const adminName = ctx.from.first_name;
     const statusLabel = action === "approve" ? "✅ Approved" : "❌ Rejected";
-
     await ctx.answerCallbackQuery(`${statusLabel}!`);
 
-    // Update admin group message
     const originalText = ctx.msg?.text ?? "";
     try {
       await ctx.editMessageText(
@@ -489,10 +319,10 @@ function registerHandlers(bot: Bot) {
         { parse_mode: "Markdown" },
       );
     } catch {
-      // already edited or unchanged — ignore
+      // already edited — ignore
     }
 
-    // Notify the user
+    // Notify user
     const userMsg =
       action === "approve"
         ? `✅ *আপনার Withdrawal Approved হয়েছে!*\n\n` +
@@ -507,23 +337,142 @@ function registerHandlers(bot: Bot) {
           `বিস্তারিত জানতে admin-এর সাথে যোগাযোগ করুন।`;
 
     try {
-      await bot.api.sendMessage(wd.user_id, userMsg, {
-        parse_mode: "Markdown",
-      });
+      await bot.api.sendMessage(wd.user_id, userMsg, { parse_mode: "Markdown" });
     } catch (err) {
-      logger.error(
-        { err, userId: wd.user_id },
-        "Failed to notify user about withdrawal decision",
-      );
+      logger.error({ err, userId: wd.user_id }, "Failed to notify user about withdrawal decision");
     }
   });
 
-  // Text messages (account number / amount input)
+  // ── Admin commands ──────────────────────────────────────────────────────────
+
+  bot.command("addbalance", async (ctx) => {
+    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
+      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
+      return;
+    }
+    const args = ctx.match.trim().split(/\s+/);
+    if (args.length !== 2) {
+      await ctx.reply(
+        `⚠️ *ব্যবহার:* \`/addbalance <telegram_id> <amount>\``,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+    const targetId = parseInt(args[0]!);
+    const amount = parseFloat(args[1]!);
+    if (isNaN(targetId) || isNaN(amount) || amount <= 0) {
+      await ctx.reply("⚠️ সঠিক Telegram ID এবং amount দিন।");
+      return;
+    }
+    const user = getUserByTelegramId(targetId);
+    if (!user) {
+      await ctx.reply(
+        `⚠️ Telegram ID \`${targetId}\` এর কোনো user পাওয়া যায়নি।\n\n_User-কে আগে bot-এ /start করতে হবে।_`,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+    const newBalance = addBalance(targetId, amount);
+    const userName = user.username ? `@${user.username}` : user.first_name;
+    await ctx.reply(
+      `✅ *Balance Add সফল!*\n\n` +
+        `👤 User: ${userName}\n` +
+        `🆔 ID: \`${targetId}\`\n` +
+        `➕ Added: *${amount} টাকা*\n` +
+        `💰 নতুন Balance: *${newBalance.toFixed(2)} টাকা*`,
+      { parse_mode: "Markdown" },
+    );
+    try {
+      await bot.api.sendMessage(
+        targetId,
+        `💰 *আপনার Balance Update হয়েছে!*\n\n➕ *${amount} টাকা* যোগ হয়েছে\n💵 নতুন Balance: *${newBalance.toFixed(2)} টাকা*`,
+        { parse_mode: "Markdown" },
+      );
+    } catch (err) {
+      logger.error({ err, targetId }, "Failed to notify user about balance update");
+    }
+  });
+
+  bot.command("removebalance", async (ctx) => {
+    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
+      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
+      return;
+    }
+    const args = ctx.match.trim().split(/\s+/);
+    if (args.length !== 2) {
+      await ctx.reply(
+        `⚠️ *ব্যবহার:* \`/removebalance <telegram_id> <amount>\``,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+    const targetId = parseInt(args[0]!);
+    const amount = parseFloat(args[1]!);
+    if (isNaN(targetId) || isNaN(amount) || amount <= 0) {
+      await ctx.reply("⚠️ সঠিক Telegram ID এবং amount দিন।");
+      return;
+    }
+    const user = getUserByTelegramId(targetId);
+    if (!user) {
+      await ctx.reply(
+        `⚠️ Telegram ID \`${targetId}\` এর কোনো user পাওয়া যায়নি।`,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+    const newBalance = addBalance(targetId, -amount);
+    const userName = user.username ? `@${user.username}` : user.first_name;
+    await ctx.reply(
+      `✅ *Balance কাটা সফল!*\n\n` +
+        `👤 User: ${userName}\n` +
+        `🆔 ID: \`${targetId}\`\n` +
+        `➖ Removed: *${amount} টাকা*\n` +
+        `💰 নতুন Balance: *${newBalance.toFixed(2)} টাকা*`,
+      { parse_mode: "Markdown" },
+    );
+  });
+
+  bot.command("checkbalance", async (ctx) => {
+    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
+      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
+      return;
+    }
+    const targetId = parseInt(ctx.match.trim());
+    if (isNaN(targetId)) {
+      await ctx.reply(
+        `⚠️ *ব্যবহার:* \`/checkbalance <telegram_id>\``,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+    const user = getUserByTelegramId(targetId);
+    if (!user) {
+      await ctx.reply(
+        `⚠️ Telegram ID \`${targetId}\` এর কোনো user পাওয়া যায়নি।`,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+    const userName = user.username ? `@${user.username}` : user.first_name;
+    await ctx.reply(
+      `👤 *User Info*\n\nনাম: ${userName}\n🆔 ID: \`${targetId}\`\n💰 Balance: *${user.balance.toFixed(2)} টাকা*`,
+      { parse_mode: "Markdown" },
+    );
+  });
+
+  // ── Text messages: withdrawal multi-step input ──────────────────────────────
   bot.on("message:text", async (ctx) => {
     const userId = ctx.from.id;
     const text = ctx.message.text.trim();
 
-    if (text.startsWith("/")) return;
+    // Skip commands and main menu buttons (handled by hears above)
+    if (
+      text.startsWith("/") ||
+      text === BTN_BALANCE ||
+      text === BTN_FILE ||
+      text === BTN_WITHDRAWAL
+    )
+      return;
 
     const state = withdrawalStates.get(userId);
     if (!state) return;
@@ -535,18 +484,15 @@ function registerHandlers(bot: Bot) {
         });
         return;
       }
-
       state.account = text;
       state.step = "entering_amount";
       withdrawalStates.set(userId, state);
-
       await ctx.reply(
         `💰 *কত টাকা withdrawal করতে চান?*\n\n_(সর্বনিম্ন ২০ টাকা)_`,
         { parse_mode: "Markdown", reply_markup: cancelKeyboard() },
       );
     } else if (state.step === "entering_amount") {
       const amount = parseFloat(text.replace(/[^\d.]/g, ""));
-
       if (isNaN(amount) || amount < 20) {
         await ctx.reply(
           `⚠️ সর্বনিম্ন withdrawal amount হলো *২০ টাকা*।\n\nআবার লিখুন:`,
@@ -554,15 +500,9 @@ function registerHandlers(bot: Bot) {
         );
         return;
       }
-
       state.amount = amount;
       state.step = "confirming";
       withdrawalStates.set(userId, state);
-
-      const confirmKeyboard = new InlineKeyboard()
-        .text("✅ Confirm করুন", "confirm_wd")
-        .row()
-        .text("❌ বাতিল করুন", "cancel_withdrawal");
 
       await ctx.reply(
         `📋 *Withdrawal Summary*\n\n` +
@@ -570,12 +510,18 @@ function registerHandlers(bot: Bot) {
           `📱 Account: \`${state.account}\`\n` +
           `💰 Amount: *${amount} টাকা*\n\n` +
           `নিশ্চিত হলে Confirm করুন।`,
-        { parse_mode: "Markdown", reply_markup: confirmKeyboard },
+        {
+          parse_mode: "Markdown",
+          reply_markup: new InlineKeyboard()
+            .text("✅ Confirm করুন", "confirm_wd")
+            .row()
+            .text("❌ বাতিল করুন", "cancel_withdrawal"),
+        },
       );
     }
   });
 
-  // File / media submissions
+  // ── File / media submissions ────────────────────────────────────────────────
   bot.on("message:document", async (ctx) => {
     const doc = ctx.message.document;
     await handleFileSubmission(
