@@ -1,6 +1,6 @@
-# [Project name]
+# Telegram Earning Bot
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+একটি Telegram bot যেখানে users balance দেখতে, file submit করতে এবং withdrawal request করতে পারে; admin group থেকে approve/reject করা যায়।
 
 ## Run & Operate
 
@@ -26,11 +26,24 @@ _Populate as you build — short repo map plus pointers to the source-of-truth f
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- **grammy** used for Telegram bot (externalized from esbuild bundle — added to `external` in `build.mjs`)
+- **better-sqlite3** for local DB (approved in `pnpm-workspace.yaml` `onlyBuiltDependencies`; DB stored at `artifacts/api-server/bot-data.db`)
+- Bot runs alongside the Express server in the same process (non-blocking via `void bot.start()`)
+- All bot handlers registered inside `registerHandlers()` — bot instance created inside `startBot()` so server starts even without `BOT_TOKEN`
+- Admin approve/reject authz: checks `ctx.chat.id === ADMIN_GROUP_ID` before processing
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+**User features:**
+- `/start` — main menu with 3 buttons: Balance, Submit File, Withdrawal
+- Balance — shows current balance from DB
+- Submit File — user sends any file (doc/photo/video/audio); forwarded to admin group
+- Withdrawal — multi-step: choose bKash/Nagad/Binance UID → account number → amount (min 20) → confirm → admin group notified
+
+**Admin features (in private group):**
+- Receives withdrawal requests with ✅ Approve / ❌ Reject buttons
+- Approve/reject updates DB and notifies the user via bot
+- Receives submitted files with metadata
 
 ## User preferences
 
