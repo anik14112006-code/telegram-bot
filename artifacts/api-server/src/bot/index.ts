@@ -6,6 +6,8 @@ import {
   getWithdrawal,
   updateWithdrawalStatus,
   saveSubmittedFile,
+  addBalance,
+  getUserByTelegramId,
 } from "./db.js";
 import { logger } from "../lib/logger.js";
 
@@ -117,6 +119,151 @@ function registerHandlers(bot: Bot) {
     await ctx.reply(
       `স্বাগতম *${from.first_name}*! 👋\n\nনিচের অপশনগুলো থেকে বেছে নিন:`,
       { parse_mode: "Markdown", reply_markup: mainKeyboard() },
+    );
+  });
+
+  // /addbalance — admin group only
+  // Usage: /addbalance <telegram_id> <amount>
+  bot.command("addbalance", async (ctx) => {
+    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
+      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
+      return;
+    }
+
+    const args = ctx.match.trim().split(/\s+/);
+    if (args.length !== 2) {
+      await ctx.reply(
+        `⚠️ *ব্যবহার:* \`/addbalance <telegram_id> <amount>\`\n\n` +
+          `উদাহরণ: \`/addbalance 123456789 500\``,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    const targetId = parseInt(args[0]!);
+    const amount = parseFloat(args[1]!);
+
+    if (isNaN(targetId) || isNaN(amount) || amount <= 0) {
+      await ctx.reply("⚠️ সঠিক Telegram ID এবং amount দিন।");
+      return;
+    }
+
+    const user = getUserByTelegramId(targetId);
+    if (!user) {
+      await ctx.reply(
+        `⚠️ Telegram ID \`${targetId}\` এর কোনো user পাওয়া যায়নি।\n\n_User-কে আগে bot-এ /start করতে হবে।_`,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    const newBalance = addBalance(targetId, amount);
+    const userName = user.username ? `@${user.username}` : user.first_name;
+
+    await ctx.reply(
+      `✅ *Balance Add সফল!*\n\n` +
+        `👤 User: ${userName}\n` +
+        `🆔 ID: \`${targetId}\`\n` +
+        `➕ Added: *${amount} টাকা*\n` +
+        `💰 নতুন Balance: *${newBalance.toFixed(2)} টাকা*`,
+      { parse_mode: "Markdown" },
+    );
+
+    // Notify the user
+    try {
+      await bot.api.sendMessage(
+        targetId,
+        `💰 *আপনার Balance Update হয়েছে!*\n\n` +
+          `➕ *${amount} টাকা* যোগ হয়েছে\n` +
+          `💵 নতুন Balance: *${newBalance.toFixed(2)} টাকা*`,
+        { parse_mode: "Markdown" },
+      );
+    } catch (err) {
+      logger.error({ err, targetId }, "Failed to notify user about balance update");
+    }
+  });
+
+  // /removebalance — admin group only
+  // Usage: /removebalance <telegram_id> <amount>
+  bot.command("removebalance", async (ctx) => {
+    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
+      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
+      return;
+    }
+
+    const args = ctx.match.trim().split(/\s+/);
+    if (args.length !== 2) {
+      await ctx.reply(
+        `⚠️ *ব্যবহার:* \`/removebalance <telegram_id> <amount>\`\n\n` +
+          `উদাহরণ: \`/removebalance 123456789 100\``,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    const targetId = parseInt(args[0]!);
+    const amount = parseFloat(args[1]!);
+
+    if (isNaN(targetId) || isNaN(amount) || amount <= 0) {
+      await ctx.reply("⚠️ সঠিক Telegram ID এবং amount দিন।");
+      return;
+    }
+
+    const user = getUserByTelegramId(targetId);
+    if (!user) {
+      await ctx.reply(
+        `⚠️ Telegram ID \`${targetId}\` এর কোনো user পাওয়া যায়নি।`,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    const newBalance = addBalance(targetId, -amount);
+    const userName = user.username ? `@${user.username}` : user.first_name;
+
+    await ctx.reply(
+      `✅ *Balance কাটা সফল!*\n\n` +
+        `👤 User: ${userName}\n` +
+        `🆔 ID: \`${targetId}\`\n` +
+        `➖ Removed: *${amount} টাকা*\n` +
+        `💰 নতুন Balance: *${newBalance.toFixed(2)} টাকা*`,
+      { parse_mode: "Markdown" },
+    );
+  });
+
+  // /checkbalance — admin group only
+  // Usage: /checkbalance <telegram_id>
+  bot.command("checkbalance", async (ctx) => {
+    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
+      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
+      return;
+    }
+
+    const targetId = parseInt(ctx.match.trim());
+    if (isNaN(targetId)) {
+      await ctx.reply(
+        `⚠️ *ব্যবহার:* \`/checkbalance <telegram_id>\``,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    const user = getUserByTelegramId(targetId);
+    if (!user) {
+      await ctx.reply(
+        `⚠️ Telegram ID \`${targetId}\` এর কোনো user পাওয়া যায়নি।`,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+
+    const userName = user.username ? `@${user.username}` : user.first_name;
+    await ctx.reply(
+      `👤 *User Info*\n\n` +
+        `নাম: ${userName}\n` +
+        `🆔 ID: \`${targetId}\`\n` +
+        `💰 Balance: *${user.balance.toFixed(2)} টাকা*`,
+      { parse_mode: "Markdown" },
     );
   });
 

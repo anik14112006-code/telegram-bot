@@ -118,6 +118,23 @@ export function updateWithdrawalStatus(
     .get(id) as Withdrawal | undefined;
 }
 
+export function addBalance(telegramId: number, amount: number): number {
+  db.prepare(
+    "UPDATE users SET balance = balance + ? WHERE telegram_id = ?",
+  ).run(amount, telegramId);
+  return (
+    db
+      .prepare("SELECT balance FROM users WHERE telegram_id = ?")
+      .get(telegramId) as { balance: number } | undefined
+  )?.balance ?? 0;
+}
+
+export function getUserByTelegramId(telegramId: number): User | undefined {
+  return db
+    .prepare("SELECT * FROM users WHERE telegram_id = ?")
+    .get(telegramId) as User | undefined;
+}
+
 export function saveSubmittedFile(
   userId: number,
   fileId: string,
