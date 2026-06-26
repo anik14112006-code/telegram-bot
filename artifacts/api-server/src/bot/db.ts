@@ -2,7 +2,6 @@ import Database from "better-sqlite3";
 import path from "path";
 
 const DB_PATH = path.join(process.cwd(), "bot-data.db");
-
 const db = new Database(DB_PATH);
 
 db.exec(`
@@ -32,10 +31,18 @@ db.exec(`
     file_id TEXT NOT NULL,
     file_name TEXT,
     file_type TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
     submitted_at INTEGER NOT NULL DEFAULT (strftime('%s', 'now')),
     FOREIGN KEY (user_id) REFERENCES users(telegram_id)
   );
 `);
+
+// Migrate: add status column if missing (for existing DBs)
+try {
+  db.exec(`ALTER TABLE submitted_files ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'`);
+} catch { /* already exists */ }
+
+// ─── Interfaces ───────────────────────────────────────────────────────────────
 
 export interface User {
   telegram_id: number;
@@ -56,6 +63,18 @@ export interface Withdrawal {
   created_at: number;
 }
 
+export interface SubmittedFile {
+  id: number;
+  user_id: number;
+  file_id: string;
+  file_name: string | null;
+  file_type: string | null;
+  status: string;
+  submitted_at: number;
+}
+
+// ─── User ─────────────────────────────────────────────────────────────────────
+
 export function getOrCreateUser(
   telegramId: number,
   firstName: string,
@@ -75,18 +94,30 @@ export function getOrCreateUser(
       "UPDATE users SET username = ?, first_name = ?, last_name = ? WHERE telegram_id = ?",
     ).run(username ?? null, firstName, lastName ?? null, telegramId);
   }
-
-  return db
-    .prepare("SELECT * FROM users WHERE telegram_id = ?")
-    .get(telegramId) as User;
+  return db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId) as User;
 }
 
 export function getUserBalance(telegramId: number): number {
-  const user = db
+  const row = db
     .prepare("SELECT balance FROM users WHERE telegram_id = ?")
     .get(telegramId) as { balance: number } | undefined;
-  return user?.balance ?? 0;
+  return row?.balance ?? 0;
 }
+
+export function addBalance(telegramId: number, amount: number): number {
+  db.prepare("UPDATE users SET balance = balance + ? WHERE telegram_id = ?").run(amount, telegramId);
+  return (
+    db.prepare("SELECT balance FROM users WHERE telegram_id = ?").get(telegramId) as
+      | { balance: number }
+      | undefined
+  )?.balance ?? 0;
+}
+
+export function getUserByTelegramId(telegramId: number): User | undefined {
+  return db.prepare("SELECT * FROM users WHERE telegram_id = ?").get(telegramId) as User | undefined;
+}
+
+// ─── Withdrawals ──────────────────────────────────────────────────────────────
 
 export function createWithdrawal(
   userId: number,
@@ -103,37 +134,14 @@ export function createWithdrawal(
 }
 
 export function getWithdrawal(id: number): Withdrawal | undefined {
-  return db
-    .prepare("SELECT * FROM withdrawals WHERE id = ?")
-    .get(id) as Withdrawal | undefined;
+  return db.prepare("SELECT * FROM withdrawals WHERE id = ?").get(id) as Withdrawal | undefined;
 }
 
-export function updateWithdrawalStatus(
-  id: number,
-  status: "approved" | "rejected",
-): Withdrawal | undefined {
+export function updateWithdrawalStatus(id: number, status: "approved" | "rejected"): void {
   db.prepare("UPDATE withdrawals SET status = ? WHERE id = ?").run(status, id);
-  return db
-    .prepare("SELECT * FROM withdrawals WHERE id = ?")
-    .get(id) as Withdrawal | undefined;
 }
 
-export function addBalance(telegramId: number, amount: number): number {
-  db.prepare(
-    "UPDATE users SET balance = balance + ? WHERE telegram_id = ?",
-  ).run(amount, telegramId);
-  return (
-    db
-      .prepare("SELECT balance FROM users WHERE telegram_id = ?")
-      .get(telegramId) as { balance: number } | undefined
-  )?.balance ?? 0;
-}
-
-export function getUserByTelegramId(telegramId: number): User | undefined {
-  return db
-    .prepare("SELECT * FROM users WHERE telegram_id = ?")
-    .get(telegramId) as User | undefined;
-}
+// ─── Submitted Files ──────────────────────────────────────────────────────────
 
 export function saveSubmittedFile(
   userId: number,
@@ -147,4 +155,17 @@ export function saveSubmittedFile(
     )
     .run(userId, fileId, fileName ?? null, fileType ?? null);
   return result.lastInsertRowid as number;
+}
+
+export function getSubmittedFile(id: number): SubmittedFile | undefined {
+  return db.prepare("SELECT * FROM submitted_files WHERE id = ?").get(id) as SubmittedFile | undefined;
+}
+
+export function updateFileStatus(id: number, status: "approved" | "rejected"): void {
+  db.prepare("UPDATE submitted_files SET status = ? WHERE id = ?").run(status, id);
+}
+
+/** Format a numeric ID as SUB-000001 */
+export function formatSubId(id: number): string {
+  return `SUB-${String(id).padStart(6, "0")}`;
 }

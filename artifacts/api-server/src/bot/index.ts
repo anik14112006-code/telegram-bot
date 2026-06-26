@@ -6,6 +6,9 @@ import {
   getWithdrawal,
   updateWithdrawalStatus,
   saveSubmittedFile,
+  getSubmittedFile,
+  updateFileStatus,
+  formatSubId,
   addBalance,
   getUserByTelegramId,
 } from "./db.js";
@@ -64,34 +67,63 @@ function cancelKeyboard() {
   return new InlineKeyboard().text("❌ বাতিল করুন", "cancel_withdrawal");
 }
 
-// ─── File Submission Helper ───────────────────────────────────────────────────
+// ─── Allowed Excel extensions ─────────────────────────────────────────────────
+
+const EXCEL_EXTENSIONS = [".xlsx", ".xls", ".csv"];
+
+function isExcelFile(fileName?: string): boolean {
+  if (!fileName) return false;
+  const lower = fileName.toLowerCase();
+  return EXCEL_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+// ─── File Submission Handler ──────────────────────────────────────────────────
 
 async function handleFileSubmission(
   ctx: Context & { from: NonNullable<Context["from"]> },
   botInstance: Bot,
   fileId: string,
-  fileType: string,
   fileName?: string,
 ) {
   const userId = ctx.from.id;
   if (!awaitingFile.has(userId)) return;
+
+  // Only accept Excel / CSV
+  if (!isExcelFile(fileName)) {
+    await ctx.reply(
+      `❌ *শুধুমাত্র Excel বা CSV ফাইল গ্রহণযোগ্য।*\n\n` +
+        `✅ Supported formats: \`.xlsx\`, \`.xls\`, \`.csv\`\n\n` +
+        `সঠিক ফাইল পাঠান:`,
+      {
+        parse_mode: "Markdown",
+        reply_markup: new InlineKeyboard().text("❌ বাতিল করুন", "cancel_file"),
+      },
+    );
+    return;
+  }
+
   awaitingFile.delete(userId);
 
-  const fileRecordId = saveSubmittedFile(userId, fileId, fileName, fileType);
+  const fileRecordId = saveSubmittedFile(userId, fileId, fileName, "excel");
+  const subId = formatSubId(fileRecordId);
 
+  // Notify admin group with approve/reject buttons
   if (ADMIN_GROUP_ID) {
     const from = ctx.from;
     const userTag = from.username ? `@${from.username}` : from.first_name;
+    const adminKeyboard = new InlineKeyboard()
+      .text("✅ Approve", `approvef_${fileRecordId}`)
+      .text("❌ Reject", `rejectf_${fileRecordId}`);
+
     try {
       await botInstance.api.sendMessage(
         ADMIN_GROUP_ID,
-        `📁 *নতুন File Submitted*\n\n` +
+        `📊 *নতুন Excel File Submitted*\n\n` +
           `👤 User: ${userTag}\n` +
           `🆔 Telegram ID: \`${from.id}\`\n` +
-          `📄 Type: ${fileType}\n` +
-          (fileName ? `📝 Name: ${fileName}\n` : "") +
-          `🔖 File ID: #${fileRecordId}`,
-        { parse_mode: "Markdown" },
+          `📝 File: ${fileName ?? "N/A"}\n` +
+          `🔖 ${subId}`,
+        { parse_mode: "Markdown", reply_markup: adminKeyboard },
       );
       await ctx.forwardMessage(ADMIN_GROUP_ID);
     } catch (err) {
@@ -100,8 +132,11 @@ async function handleFileSubmission(
   }
 
   await ctx.reply(
-    `✅ *File সফলভাবে Submit হয়েছে!*\n\n🔖 File ID: #${fileRecordId}\n\nAdmin শীঘ্রই review করবেন।`,
-    { parse_mode: "Markdown" },
+    `🎉 ধন্যবাদ!\n\n` +
+      `✅ আপনার ফাইল সফলভাবে জমা হয়েছে।\n\n` +
+      `🆔 Submission ID: ${subId}\n` +
+      `📋 Status: Pending\n` +
+      `💰 রিভিউ সম্পন্ন হলে আপনাকে আপডেট করা হবে।`,
   );
 }
 
@@ -142,7 +177,7 @@ function registerHandlers(bot: Bot) {
     awaitingFile.add(ctx.from!.id);
 
     await ctx.reply(
-      `📁 *File Submit করুন*\n\nআপনার ফাইলটি পাঠান।\n_(Document, Photo, Video, Audio — সব ধরনের ফাইল)_`,
+      `📊 *Excel File Submit করুন*\n\nআপনার Excel বা CSV ফাইলটি পাঠান।\n\n✅ Supported: \`.xlsx\`, \`.xls\`, \`.csv\``,
       {
         parse_mode: "Markdown",
         reply_markup: new InlineKeyboard().text("❌ বাতিল করুন", "cancel_file"),
@@ -521,49 +556,65 @@ function registerHandlers(bot: Bot) {
     }
   });
 
-  // ── File / media submissions ────────────────────────────────────────────────
+  // ── Excel/CSV document submissions only ────────────────────────────────────
   bot.on("message:document", async (ctx) => {
     const doc = ctx.message.document;
     await handleFileSubmission(
       ctx as Context & { from: NonNullable<Context["from"]> },
       bot,
       doc.file_id,
-      "document",
       doc.file_name,
     );
   });
 
-  bot.on("message:photo", async (ctx) => {
-    const photos = ctx.message.photo;
-    const photo = photos[photos.length - 1]!;
-    await handleFileSubmission(
-      ctx as Context & { from: NonNullable<Context["from"]> },
-      bot,
-      photo.file_id,
-      "photo",
-    );
-  });
+  // ── Admin: Approve / Reject file submissions ────────────────────────────────
+  bot.callbackQuery(/^(approvef|rejectf)_(\d+)$/, async (ctx) => {
+    if (ADMIN_GROUP_ID && String(ctx.chat?.id) !== ADMIN_GROUP_ID) {
+      await ctx.answerCallbackQuery("⛔ Permission নেই!");
+      return;
+    }
 
-  bot.on("message:video", async (ctx) => {
-    const video = ctx.message.video;
-    await handleFileSubmission(
-      ctx as Context & { from: NonNullable<Context["from"]> },
-      bot,
-      video.file_id,
-      "video",
-      video.file_name,
-    );
-  });
+    const action = ctx.match[1] as "approvef" | "rejectf";
+    const fileId = parseInt(ctx.match[2]!);
 
-  bot.on("message:audio", async (ctx) => {
-    const audio = ctx.message.audio;
-    await handleFileSubmission(
-      ctx as Context & { from: NonNullable<Context["from"]> },
-      bot,
-      audio.file_id,
-      "audio",
-      audio.file_name,
-    );
+    const file = getSubmittedFile(fileId);
+    if (!file) {
+      await ctx.answerCallbackQuery("⚠️ Submission পাওয়া যায়নি!");
+      return;
+    }
+    if (file.status !== "pending") {
+      await ctx.answerCallbackQuery("⚠️ এই submission ইতিমধ্যে process হয়েছে!");
+      return;
+    }
+
+    const newStatus = action === "approvef" ? "approved" : "rejected";
+    updateFileStatus(fileId, newStatus);
+
+    const adminName = ctx.from.first_name;
+    const statusLabel = action === "approvef" ? "✅ Approved" : "❌ Rejected";
+    await ctx.answerCallbackQuery(`${statusLabel}!`);
+
+    // Update admin group message
+    const originalText = ctx.msg?.text ?? "";
+    try {
+      await ctx.editMessageText(
+        `${originalText}\n\n${statusLabel} by ${adminName}`,
+        { parse_mode: "Markdown" },
+      );
+    } catch { /* already edited */ }
+
+    // Notify user
+    const subId = formatSubId(fileId);
+    const userMsg =
+      action === "approvef"
+        ? `✅ আপনার ফাইল টি গ্রহণ করা হয়েছে।\n\n🆔 ${subId}\n\nরিপোর্ট এর জন্য অপেক্ষা করুন।`
+        : `❌ আপনার ফাইল টি গ্রহণ করা হয়নি।\n\n🆔 ${subId}\n\nবিস্তারিত জানতে admin-এর সাথে যোগাযোগ করুন।`;
+
+    try {
+      await bot.api.sendMessage(file.user_id, userMsg);
+    } catch (err) {
+      logger.error({ err, userId: file.user_id }, "Failed to notify user about file decision");
+    }
   });
 }
 
