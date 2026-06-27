@@ -169,3 +169,7 @@ export function updateFileStatus(id: number, status: "approved" | "rejected"): v
 export function formatSubId(id: number): string {
   return `SUB-${String(id).padStart(6, "0")}`;
 }
+
+export function getAllUsers(): User[] {
+  return db.prepare("SELECT * FROM users").all() as User[];
+}

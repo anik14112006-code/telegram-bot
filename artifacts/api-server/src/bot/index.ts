@@ -1,4 +1,6 @@
 import { Bot, Context, InlineKeyboard, Keyboard } from "grammy";
+import * as XLSX from "xlsx";
+import https from "node:https";
 import {
   getOrCreateUser,
   getUserBalance,
@@ -11,6 +13,7 @@ import {
   formatSubId,
   addBalance,
   getUserByTelegramId,
+  getAllUsers,
 } from "./db.js";
 import { logger } from "../lib/logger.js";
 
@@ -67,6 +70,38 @@ function cancelKeyboard() {
   return new InlineKeyboard().text("❌ বাতিল করুন", "cancel_withdrawal");
 }
 
+// ─── Row counting helper ──────────────────────────────────────────────────────
+
+async function countExcelRows(fileUrl: string, fileName: string): Promise<number> {
+  return new Promise((resolve) => {
+    const chunks: Buffer[] = [];
+    https.get(fileUrl, (res) => {
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => {
+        try {
+          const buf = Buffer.concat(chunks);
+          const lower = fileName.toLowerCase();
+          if (lower.endsWith(".csv")) {
+            const text = buf.toString("utf-8");
+            const lines = text.split("\n").filter((l) => l.trim().length > 0);
+            resolve(Math.max(0, lines.length - 1)); // minus header
+          } else {
+            const wb = XLSX.read(buf, { type: "buffer" });
+            const sheet = wb.Sheets[wb.SheetNames[0]!];
+            if (!sheet) return resolve(0);
+            const rows = XLSX.utils.sheet_to_json(sheet);
+            resolve(rows.length);
+          }
+        } catch (err) {
+          logger.error({ err }, "Failed to count rows");
+          resolve(-1);
+        }
+      });
+      res.on("error", () => resolve(-1));
+    }).on("error", () => resolve(-1));
+  });
+}
+
 // ─── Allowed Excel extensions ─────────────────────────────────────────────────
 
 const EXCEL_EXTENSIONS = [".xlsx", ".xls", ".csv"];
@@ -107,6 +142,21 @@ async function handleFileSubmission(
   const fileRecordId = saveSubmittedFile(userId, fileId, fileName, "excel");
   const subId = formatSubId(fileRecordId);
 
+  // Count rows in the Excel/CSV file
+  let rowCount = -1;
+  try {
+    const fileInfo = await botInstance.api.getFile(fileId);
+    const fileUrl = `https://api.telegram.org/file/bot${botInstance.token}/${fileInfo.file_path}`;
+    rowCount = await countExcelRows(fileUrl, fileName ?? "");
+  } catch (err) {
+    logger.error({ err }, "Failed to get file for row count");
+  }
+
+  const rowMsg =
+    rowCount >= 0
+      ? `📊 মোট Data: *${rowCount} টি row* পাওয়া গেছে`
+      : `📊 Data count করা সম্ভব হয়নি`;
+
   // Notify admin group with approve/reject buttons
   if (ADMIN_GROUP_ID) {
     const from = ctx.from;
@@ -119,9 +169,10 @@ async function handleFileSubmission(
       await botInstance.api.sendMessage(
         ADMIN_GROUP_ID,
         `📊 *নতুন Excel File Submitted*\n\n` +
-          `👤 User: ${userTag}\n` +
+          `👤 User: [${userTag}](tg://user?id=${from.id})\n` +
           `🆔 Telegram ID: \`${from.id}\`\n` +
           `📝 File: ${fileName ?? "N/A"}\n` +
+          `📈 Rows: ${rowCount >= 0 ? rowCount : "N/A"}\n` +
           `🔖 ${subId}`,
         { parse_mode: "Markdown", reply_markup: adminKeyboard },
       );
@@ -135,8 +186,10 @@ async function handleFileSubmission(
     `🎉 ধন্যবাদ!\n\n` +
       `✅ আপনার ফাইল সফলভাবে জমা হয়েছে।\n\n` +
       `🆔 Submission ID: ${subId}\n` +
+      `${rowMsg}\n` +
       `📋 Status: Pending\n` +
       `💰 রিভিউ সম্পন্ন হলে আপনাকে আপডেট করা হবে।`,
+    { parse_mode: "Markdown" },
   );
 }
 
@@ -491,6 +544,69 @@ function registerHandlers(bot: Bot) {
     const userName = user.username ? `@${user.username}` : user.first_name;
     await ctx.reply(
       `👤 *User Info*\n\nনাম: ${userName}\n🆔 ID: \`${targetId}\`\n💰 Balance: *${user.balance.toFixed(2)} টাকা*`,
+      { parse_mode: "Markdown" },
+    );
+  });
+
+  // ── /msg — admin only: send message to specific user ───────────────────────
+  // Usage: /msg <telegram_id> <message text>
+  bot.command("msg", async (ctx) => {
+    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
+      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
+      return;
+    }
+    const parts = ctx.match.trim().split(/\s+/);
+    if (parts.length < 2) {
+      await ctx.reply(
+        `⚠️ *ব্যবহার:* \`/msg <telegram_id> <message>\`\n\nউদাহরণ: \`/msg 123456789 আপনার রিপোর্ট তৈরি হয়েছে!\``,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+    const targetId = parseInt(parts[0]!);
+    const message = parts.slice(1).join(" ");
+    if (isNaN(targetId)) {
+      await ctx.reply("⚠️ সঠিক Telegram ID দিন।");
+      return;
+    }
+    try {
+      await bot.api.sendMessage(targetId, message);
+      await ctx.reply(`✅ Message পাঠানো হয়েছে \`${targetId}\`-কে।`, {
+        parse_mode: "Markdown",
+      });
+    } catch (err) {
+      logger.error({ err, targetId }, "Failed to send message to user");
+      await ctx.reply(`❌ Message পাঠানো যায়নি। User হয়তো bot block করেছে।`);
+    }
+  });
+
+  // ── /broadcast — admin only: send message to all users ─────────────────────
+  bot.command("broadcast", async (ctx) => {
+    if (ADMIN_GROUP_ID && String(ctx.chat.id) !== ADMIN_GROUP_ID) {
+      await ctx.reply("⛔ এই command শুধু admin group-এ ব্যবহার করা যাবে।");
+      return;
+    }
+    const message = ctx.match.trim();
+    if (!message) {
+      await ctx.reply(
+        `⚠️ *ব্যবহার:* \`/broadcast <message>\`\n\nউদাহরণ: \`/broadcast আজকের রিপোর্ট দেওয়া শুরু হয়েছে!\``,
+        { parse_mode: "Markdown" },
+      );
+      return;
+    }
+    const users = getAllUsers();
+    let sent = 0;
+    let failed = 0;
+    for (const user of users) {
+      try {
+        await bot.api.sendMessage(user.telegram_id, message);
+        sent++;
+      } catch {
+        failed++;
+      }
+    }
+    await ctx.reply(
+      `📢 *Broadcast সম্পন্ন!*\n\n✅ পাঠানো হয়েছে: *${sent} জনকে*\n❌ পাঠানো যায়নি: *${failed} জন*`,
       { parse_mode: "Markdown" },
     );
   });
