@@ -154,7 +154,7 @@ async function handleFileSubmission(
 
   const rowMsg =
     rowCount >= 0
-      ? `📊 মোট Data: *${rowCount} টি row* পাওয়া গেছে`
+      ? `📊 মোট Data: *${rowCount} টি ফাইল* পাওয়া গেছে`
       : `📊 Data count করা সম্ভব হয়নি`;
 
   // Notify admin group with approve/reject buttons
