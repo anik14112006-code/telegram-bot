@@ -87,13 +87,15 @@ async function countExcelRows(fileUrl: string, fileName: string): Promise<number
           if (lower.endsWith(".csv")) {
             const text = buf.toString("utf-8");
             const lines = text.split("\n").filter((l) => l.trim().length > 0);
-            resolve(Math.max(0, lines.length - 1)); // minus header
+            resolve(lines.length);
           } else {
             const wb = XLSX.read(buf, { type: "buffer" });
             const sheet = wb.Sheets[wb.SheetNames[0]!];
             if (!sheet) return resolve(0);
-            const rows = XLSX.utils.sheet_to_json(sheet);
-            resolve(rows.length);
+            const ref = sheet["!ref"];
+            if (!ref) return resolve(0);
+            const range = XLSX.utils.decode_range(ref);
+            resolve(range.e.r); // total rows minus header row
           }
         } catch (err) {
           logger.error({ err }, "Failed to count rows");
