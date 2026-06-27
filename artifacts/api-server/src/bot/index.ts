@@ -42,6 +42,7 @@ const awaitingFile = new Set<number>();
 const BTN_BALANCE = "💰 Balance";
 const BTN_FILE = "📁 Submit File";
 const BTN_WITHDRAWAL = "💸 Withdrawal";
+const BTN_SUPPORT = "🆘 Admin Support";
 
 // ─── Keyboards ────────────────────────────────────────────────────────────────
 
@@ -52,6 +53,8 @@ function mainReplyKeyboard() {
     .text(BTN_FILE)
     .row()
     .text(BTN_WITHDRAWAL)
+    .row()
+    .text(BTN_SUPPORT)
     .resized()
     .persistent();
 }
@@ -242,6 +245,14 @@ function registerHandlers(bot: Bot) {
     await ctx.answerCallbackQuery();
     awaitingFile.delete(ctx.from.id);
     await ctx.editMessageText("বাতিল করা হয়েছে।");
+  });
+
+  // ── Admin Support button ────────────────────────────────────────────────────
+  bot.hears(BTN_SUPPORT, async (ctx) => {
+    await ctx.reply(
+      `🆘 *Admin Support*\n\nযেকোনো সমস্যায় এডমিন এর সাথে যোগাযোগ করুন\n👉 @Instagram2fareceiver_bot`,
+      { parse_mode: "Markdown" },
+    );
   });
 
   // ── Withdrawal button ───────────────────────────────────────────────────────
@@ -621,7 +632,8 @@ function registerHandlers(bot: Bot) {
       text.startsWith("/") ||
       text === BTN_BALANCE ||
       text === BTN_FILE ||
-      text === BTN_WITHDRAWAL
+      text === BTN_WITHDRAWAL ||
+      text === BTN_SUPPORT
     )
       return;
 
