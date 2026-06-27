@@ -252,8 +252,7 @@ function registerHandlers(bot: Bot) {
   // ── Admin Support button ────────────────────────────────────────────────────
   bot.hears(BTN_SUPPORT, async (ctx) => {
     await ctx.reply(
-      `🆘 *Admin Support*\n\nযেকোনো সমস্যায় এডমিন এর সাথে যোগাযোগ করুন\n👉 @Instagram2fareceiver_bot`,
-      { parse_mode: "Markdown" },
+      `🆘 Admin Support\n\nযেকোনো সমস্যায় এডমিন এর সাথে যোগাযোগ করুন\n👉 @Instagram2fareceiver_bot`,
     );
   });
 
