@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: telegram-bot
+    runtime: node
+    buildCommand: corepack enable && corepack prepare pnpm@9.15.9 --activate && pnpm install && pnpm --filter @workspace/api-server run build
+    startCommand: node artifacts/api-server/dist/index.mjs
+    envVars:
+      - key: NODE_ENV
+        value: production
